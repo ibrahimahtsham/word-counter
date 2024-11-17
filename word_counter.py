@@ -15,23 +15,21 @@ class WordCounter:
         self,
         save_path,
         words_to_track,
-        label,
         audio_source_var,
         indicator_label,
         transcript_text,
+        words_listbox,
     ):
         self.save_path = save_path
-        self.words_to_track = [
-            word.strip().lower() for word in words_to_track.split(",")
-        ]
+        self.words_to_track = words_to_track
         self.counts = self.load_counts()
         self.recognizer = sr.Recognizer()
         self.running = True
-        self.label = label
         self.audio_source_var = audio_source_var
         self.indicator_label = indicator_label
         self.transcript_text = transcript_text
-        self.update_label()
+        self.words_listbox = words_listbox
+        self.update_listbox()
 
     def load_counts(self):
         if os.path.exists(self.save_path):
@@ -43,11 +41,10 @@ class WordCounter:
         with open(self.save_path, "w") as file:
             json.dump(self.counts, file)
 
-    def update_label(self):
-        counts_text = ", ".join(
-            [f"{word}: {count}" for word, count in self.counts.items()]
-        )
-        self.label.config(text=f"Counts: {counts_text}")
+    def update_listbox(self):
+        self.words_listbox.delete(0, tk.END)
+        for word, count in self.counts.items():
+            self.words_listbox.insert(tk.END, f"{word}: {count}")
 
     def listen_and_count(self):
         while self.running:
@@ -70,7 +67,7 @@ class WordCounter:
                                 if word in text:
                                     self.counts[word] += text.split().count(word)
                             self.save_counts()
-                            self.update_label()
+                            self.update_listbox()
                         except sr.UnknownValueError:
                             continue
                         except sr.WaitTimeoutError:
@@ -101,12 +98,21 @@ def create_icon(counter, root):
     return Icon("Word Counter", image, menu=menu)
 
 
-def update_words():
-    counter.words_to_track = [
-        word.strip().lower() for word in word_input.get().split(",")
-    ]
-    counter.counts = {word: 0 for word in counter.words_to_track}
-    counter.update_label()
+def add_word():
+    word = word_input.get().strip().lower()
+    if word and word not in counter.words_to_track:
+        counter.words_to_track.append(word)
+        counter.counts[word] = 0
+        counter.update_listbox()
+        word_input.delete(0, tk.END)
+
+
+def remove_word():
+    selected_word = words_listbox.get(tk.ACTIVE).split(":")[0]
+    if selected_word in counter.words_to_track:
+        counter.words_to_track.remove(selected_word)
+        del counter.counts[selected_word]
+        counter.update_listbox()
 
 
 def toggle_listening():
@@ -131,57 +137,77 @@ def save_transcript():
 if __name__ == "__main__":
     exe_dir = os.path.dirname(sys.argv[0])
     save_file = os.path.join(exe_dir, "word_counter.json")
-    words_to_track = "example, count, sigma"  # Default words to track
+    words_to_track = ["example", "count", "sigma"]  # Default words to track
 
     # Create the tkinter window
     root = tk.Tk()
     root.title("Word Counter")
-    root.geometry("500x600")
+    root.geometry("800x600")
 
     style = ttk.Style()
     style.theme_use("clam")
 
-    label = ttk.Label(root, text="Counts: 0", font=("Helvetica", 16))
-    label.pack(pady=10)
+    # Top controls
+    top_frame = ttk.Frame(root)
+    top_frame.pack(side=tk.TOP, fill=tk.X, pady=10)
 
-    word_input = ttk.Entry(root, font=("Helvetica", 14))
-    word_input.insert(0, words_to_track)
-    word_input.pack(pady=10)
-
-    update_button = ttk.Button(root, text="Update Words", command=update_words)
-    update_button.pack(pady=5)
+    indicator_label = ttk.Label(
+        top_frame, text="Not Listening", font=("Helvetica", 12), foreground="red"
+    )
+    indicator_label.pack(side=tk.LEFT, padx=10)
 
     audio_source_var = tk.StringVar(value="mic")
     mic_radio = ttk.Radiobutton(
-        root, text="Microphone", variable=audio_source_var, value="mic"
+        top_frame, text="Microphone", variable=audio_source_var, value="mic"
     )
     desktop_radio = ttk.Radiobutton(
-        root, text="Desktop Audio", variable=audio_source_var, value="desktop"
+        top_frame, text="Desktop Audio", variable=audio_source_var, value="desktop"
     )
-    mic_radio.pack()
-    desktop_radio.pack()
+    mic_radio.pack(side=tk.LEFT, padx=5)
+    desktop_radio.pack(side=tk.LEFT, padx=5)
 
-    indicator_label = ttk.Label(
-        root, text="Not Listening", font=("Helvetica", 12), foreground="red"
+    save_button = ttk.Button(top_frame, text="Save Transcript", command=save_transcript)
+    save_button.pack(side=tk.LEFT, padx=5)
+
+    pause_button = ttk.Button(
+        top_frame, text="Pause Listening", command=toggle_listening
     )
-    indicator_label.pack(pady=10)
+    pause_button.pack(side=tk.LEFT, padx=5)
 
-    transcript_text = tk.Text(root, height=15, width=50, wrap="word")
-    transcript_text.pack(pady=10)
+    # Main content area
+    main_frame = ttk.Frame(root)
+    main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-    pause_button = ttk.Button(root, text="Pause Listening", command=toggle_listening)
-    pause_button.pack(pady=5)
+    # Sidebar for words list
+    sidebar_frame = ttk.Frame(main_frame)
+    sidebar_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
-    save_button = ttk.Button(root, text="Save Transcript", command=save_transcript)
-    save_button.pack(pady=5)
+    word_input = ttk.Entry(sidebar_frame, font=("Helvetica", 14))
+    word_input.pack(side=tk.TOP, fill=tk.X, pady=5)
+
+    add_button = ttk.Button(sidebar_frame, text="+", command=add_word)
+    add_button.pack(side=tk.TOP, pady=5)
+
+    remove_button = ttk.Button(sidebar_frame, text="-", command=remove_word)
+    remove_button.pack(side=tk.TOP, pady=5)
+
+    words_listbox = tk.Listbox(sidebar_frame, height=20)
+    words_listbox.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
+
+    # Transcript area
+    transcript_frame = ttk.Frame(main_frame)
+    transcript_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+    transcript_text = tk.Text(transcript_frame, height=15, width=50, wrap="word")
+    transcript_text.pack(fill=tk.BOTH, expand=True)
 
     counter = WordCounter(
         save_file,
         words_to_track,
-        label,
         audio_source_var,
         indicator_label,
         transcript_text,
+        words_listbox,
     )
 
     # Override the window close event
