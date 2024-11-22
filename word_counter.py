@@ -8,6 +8,32 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog
 import sys
+import pyaudio
+import numpy as np
+import logging
+
+
+# Set up logging
+class TextHandler(logging.Handler):
+    def __init__(self, text_widget):
+        super().__init__()
+        self.text_widget = text_widget
+
+    def emit(self, record):
+        msg = self.format(record)
+
+        def append():
+            self.text_widget.config(state=tk.NORMAL)
+            self.text_widget.insert(tk.END, msg + "\n")
+            self.text_widget.config(state=tk.DISABLED)
+            self.text_widget.yview(tk.END)
+
+        self.text_widget.after(0, append)
+
+
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
 
 class WordCounter:
@@ -16,9 +42,10 @@ class WordCounter:
         save_path,
         words_to_track,
         audio_source_var,
-        indicator_label,
+        volume_meter,
         transcript_text,
         words_listbox,
+        device_map,
     ):
         self.save_path = save_path
         self.words_to_track = words_to_track
@@ -26,9 +53,10 @@ class WordCounter:
         self.recognizer = sr.Recognizer()
         self.running = True
         self.audio_source_var = audio_source_var
-        self.indicator_label = indicator_label
+        self.volume_meter = volume_meter
         self.transcript_text = transcript_text
         self.words_listbox = words_listbox
+        self.device_map = device_map
         self.update_listbox()
 
     def load_counts(self):
@@ -47,20 +75,22 @@ class WordCounter:
             self.words_listbox.insert(tk.END, f"{word}: {count}")
 
     def listen_and_count(self):
+        logging.debug("Starting listen_and_count")
         while self.running:
             try:
-                source = (
-                    sr.Microphone()
-                    if self.audio_source_var.get() == "mic"
-                    else sr.AudioFile("path_to_desktop_audio.wav")
-                )
+                device_name = self.audio_source_var.get()
+                device_index = self.device_map[device_name]
+                logging.debug(f"Using device index: {device_index}")
+                source = sr.Microphone(device_index=device_index)
                 with source as audio_source:
                     self.recognizer.adjust_for_ambient_noise(audio_source)
-                    self.indicator_label.config(text="Listening...", foreground="green")
+                    logging.debug("Adjusted for ambient noise")
                     while self.running:
                         try:
                             audio = self.recognizer.listen(audio_source, timeout=5)
+                            logging.debug("Audio captured")
                             text = self.recognizer.recognize_google(audio).lower()
+                            logging.debug(f"Recognized text: {text}")
                             self.transcript_text.insert(tk.END, text + "\n")
                             self.transcript_text.see(tk.END)
                             for word in self.words_to_track:
@@ -69,12 +99,44 @@ class WordCounter:
                             self.save_counts()
                             self.update_listbox()
                         except sr.UnknownValueError:
+                            logging.debug(
+                                "UnknownValueError: Could not understand audio"
+                            )
+                            self.transcript_text.insert(
+                                tk.END, "[Could not understand audio]\n"
+                            )
+                            self.transcript_text.see(tk.END)
                             continue
                         except sr.WaitTimeoutError:
+                            logging.debug("WaitTimeoutError: Listening timed out")
                             break
             except Exception as e:
-                self.indicator_label.config(text="Error occurred", foreground="red")
-                print(f"Error: {e}")
+                logging.error(f"Error in listen_and_count: {e}")
+
+    def update_volume_meter(self):
+        logging.debug("Starting update_volume_meter")
+        p = pyaudio.PyAudio()
+        device_name = self.audio_source_var.get()
+        device_index = self.device_map[device_name]
+        stream = p.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=44100,
+            input=True,
+            input_device_index=device_index,
+            frames_per_buffer=1024,
+        )
+        while self.running:
+            try:
+                data = np.frombuffer(stream.read(1024), dtype=np.int16)
+                volume = np.linalg.norm(data) / 1024
+                self.volume_meter["value"] = volume * 100
+                logging.debug(f"Volume: {volume * 100}")
+            except Exception as e:
+                logging.error(f"Error in update_volume_meter: {e}")
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
 
 
 def create_icon(counter, root):
@@ -122,6 +184,7 @@ def toggle_listening():
     else:
         counter.running = True
         threading.Thread(target=counter.listen_and_count).start()
+        threading.Thread(target=counter.update_volume_meter).start()
         pause_button.config(text="Pause Listening")
 
 
@@ -134,6 +197,44 @@ def save_transcript():
             file.write(transcript_text.get("1.0", tk.END))
 
 
+def show_logs():
+    log_window = tk.Toplevel(root)
+    log_window.title("Logs")
+    log_window.geometry("1000x800")
+
+    log_text = tk.Text(log_window, wrap="word")
+    log_text.pack(fill=tk.BOTH, expand=True)
+
+    text_handler = TextHandler(log_text)
+    text_handler.setFormatter(formatter)
+    logger.addHandler(text_handler)
+
+
+def get_audio_devices():
+    p = pyaudio.PyAudio()
+    devices = []
+    device_map = {}
+    seen_devices = set()
+    default_device_index = p.get_default_input_device_info()["index"]
+    default_device_name = None
+    for i in range(p.get_device_count()):
+        device_info = p.get_device_info_by_index(i)
+        device_name = device_info["name"]
+        if (
+            device_info["maxInputChannels"] > 0
+            and device_info["hostApi"] == 0  # Ensure the device is enabled and usable
+            and device_name not in seen_devices
+        ):
+            if i == default_device_index:
+                device_name += " (Default)"
+                default_device_name = device_name
+            devices.append(device_name)
+            device_map[device_name] = i
+            seen_devices.add(device_name)
+    p.terminate()
+    return devices, default_device_name, device_map
+
+
 if __name__ == "__main__":
     exe_dir = os.path.dirname(sys.argv[0])
     save_file = os.path.join(exe_dir, "word_counter.json")
@@ -142,7 +243,7 @@ if __name__ == "__main__":
     # Create the tkinter window
     root = tk.Tk()
     root.title("Word Counter")
-    root.geometry("800x600")
+    root.geometry("1000x800")
 
     style = ttk.Style()
     style.theme_use("clam")
@@ -151,20 +252,24 @@ if __name__ == "__main__":
     top_frame = ttk.Frame(root)
     top_frame.pack(side=tk.TOP, fill=tk.X, pady=10)
 
-    indicator_label = ttk.Label(
-        top_frame, text="Not Listening", font=("Helvetica", 12), foreground="red"
-    )
-    indicator_label.pack(side=tk.LEFT, padx=10)
+    volume_label = ttk.Label(top_frame, text="Volume:", font=("Helvetica", 12))
+    volume_label.pack(side=tk.LEFT, padx=5)
 
-    audio_source_var = tk.StringVar(value="mic")
-    mic_radio = ttk.Radiobutton(
-        top_frame, text="Microphone", variable=audio_source_var, value="mic"
+    volume_meter = ttk.Progressbar(
+        top_frame, orient="horizontal", length=200, mode="determinate"
     )
-    desktop_radio = ttk.Radiobutton(
-        top_frame, text="Desktop Audio", variable=audio_source_var, value="desktop"
+    volume_meter.pack(side=tk.LEFT, padx=10)
+
+    audio_devices, default_device_name, device_map = get_audio_devices()
+    audio_source_var = tk.StringVar(value=default_device_name)
+    max_length = max(len(name) for name in audio_devices)
+    audio_device_menu = ttk.Combobox(
+        top_frame,
+        textvariable=audio_source_var,
+        values=audio_devices,
+        width=max_length,
     )
-    mic_radio.pack(side=tk.LEFT, padx=5)
-    desktop_radio.pack(side=tk.LEFT, padx=5)
+    audio_device_menu.pack(side=tk.LEFT, padx=5)
 
     save_button = ttk.Button(top_frame, text="Save Transcript", command=save_transcript)
     save_button.pack(side=tk.LEFT, padx=5)
@@ -173,6 +278,9 @@ if __name__ == "__main__":
         top_frame, text="Pause Listening", command=toggle_listening
     )
     pause_button.pack(side=tk.LEFT, padx=5)
+
+    log_button = ttk.Button(top_frame, text="Show Logs", command=show_logs)
+    log_button.pack(side=tk.LEFT, padx=5)
 
     # Main content area
     main_frame = ttk.Frame(root)
@@ -205,9 +313,10 @@ if __name__ == "__main__":
         save_file,
         words_to_track,
         audio_source_var,
-        indicator_label,
+        volume_meter,
         transcript_text,
         words_listbox,
+        device_map,
     )
 
     # Override the window close event
