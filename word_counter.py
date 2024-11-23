@@ -198,16 +198,10 @@ def save_transcript():
 
 
 def show_logs():
-    log_window = tk.Toplevel(root)
-    log_window.title("Logs")
-    log_window.geometry("1000x800")
-
-    log_text = tk.Text(log_window, wrap="word")
-    log_text.pack(fill=tk.BOTH, expand=True)
-
-    text_handler = TextHandler(log_text)
-    text_handler.setFormatter(formatter)
-    logger.addHandler(text_handler)
+    if log_window.state() == "withdrawn":
+        log_window.deiconify()
+    else:
+        log_window.withdraw()
 
 
 def get_audio_devices():
@@ -319,9 +313,29 @@ if __name__ == "__main__":
         device_map,
     )
 
-    # Override the window close event
+    # Create the log window at the start
+    log_window = tk.Toplevel(root)
+    log_window.title("Logs")
+    log_window.geometry("1000x800")
+    log_window.withdraw()
+
+    log_text = tk.Text(log_window, wrap="word")
+    log_text.pack(fill=tk.BOTH, expand=True)
+
+    text_handler = TextHandler(log_text)
+    text_handler.setFormatter(formatter)
+    logger.addHandler(text_handler)
+
+    # Override the window close event for the log window
+    def hide_log_window():
+        log_window.withdraw()
+
+    log_window.protocol("WM_DELETE_WINDOW", hide_log_window)
+
+    # Override the window close event for the main window
     def on_closing():
         root.withdraw()
+        log_window.withdraw()
 
     root.protocol("WM_DELETE_WINDOW", on_closing)
 
