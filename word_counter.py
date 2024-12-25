@@ -14,6 +14,14 @@ import logging
 
 
 # Set up logging
+log_file = "word_counter.log"
+logging.basicConfig(
+    filename=log_file,
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+
+
 class TextHandler(logging.Handler):
     def __init__(self, text_widget):
         super().__init__()
@@ -110,37 +118,57 @@ class WordCounter:
                         except sr.WaitTimeoutError:
                             logging.debug("WaitTimeoutError: Listening timed out")
                             break
+                        except Exception as e:
+                            logging.error(f"Error in listen_and_count: {e}")
+                            break
             except Exception as e:
                 logging.error(f"Error in listen_and_count: {e}")
+                break
 
     def update_volume_meter(self):
         logging.debug("Starting update_volume_meter")
         p = pyaudio.PyAudio()
         device_name = self.audio_source_var.get()
         device_index = self.device_map[device_name]
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=44100,
-            input=True,
-            input_device_index=device_index,
-            frames_per_buffer=1024,
+        try:
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=44100,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=1024,
+            )
+        except Exception as e:
+            logging.error(f"Error opening audio stream: {e}")
+            return
+
+        scaling_factor = (
+            100  # Increase this factor to amplify the volume values appropriately
         )
         while self.running:
             try:
                 data = np.frombuffer(stream.read(1024), dtype=np.int16)
                 volume = np.linalg.norm(data) / 1024
-                self.volume_meter["value"] = volume * 100
-                logging.debug(f"Volume: {volume * 100}")
+                amplified_volume = volume * scaling_factor
+                self.volume_meter["value"] = min(amplified_volume, 100)
+                logging.debug(f"Volume: {amplified_volume}")
             except Exception as e:
                 logging.error(f"Error in update_volume_meter: {e}")
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+                break  # Exit the loop if an error occurs
+
+        # Ensure the stream is properly closed and PyAudio is terminated
+        try:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+        except Exception as e:
+            logging.error(f"Error closing audio stream: {e}")
 
 
 def create_icon(counter, root):
     def quit_program(icon, item):
+        logging.debug("Quitting program")
         counter.running = False
         counter.save_counts()
         icon.stop()
@@ -334,6 +362,7 @@ if __name__ == "__main__":
 
     # Override the window close event for the main window
     def on_closing():
+        logging.debug("Main window closing")
         root.withdraw()
         log_window.withdraw()
 
@@ -343,16 +372,26 @@ if __name__ == "__main__":
     listen_thread = threading.Thread(target=counter.listen_and_count)
     listen_thread.start()
 
+    # Run the volume meter update in a separate thread
+    volume_thread = threading.Thread(target=counter.update_volume_meter)
+    volume_thread.start()
+
     # Create taskbar icon
     icon = create_icon(counter, root)
     icon_thread = threading.Thread(target=icon.run)
     icon_thread.start()
 
     # Start the tkinter main loop
-    root.mainloop()
+    try:
+        root.mainloop()
+    except Exception as e:
+        logging.error(f"Error in main loop: {e}")
 
     # Ensure all threads are properly stopped
+    logging.debug("Stopping all threads")
     counter.running = False
     listen_thread.join()
+    volume_thread.join()
     icon.stop()
     icon_thread.join()
+    logging.debug("All threads stopped")
